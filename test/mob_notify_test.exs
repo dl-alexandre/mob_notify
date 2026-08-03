@@ -24,39 +24,28 @@ defmodule MobNotifyTest do
       assert %{errors: []} = Validator.validate_plugin(m, @plugin_dir)
     end
 
-    test "ships a valid signature for the manifest and referenced native sources", %{
+    test "ships a current version signature for the manifest and referenced native sources", %{
       manifest: m
     } do
-      assert :ok = Verify.verify_plugin(@plugin_dir, m)
+      assert {:ok, 2} = Verify.verify_plugin_with_version(@plugin_dir, m)
     end
 
     @tag :tmp_dir
-    test "rejects a signature after a referenced native source is changed", %{tmp_dir: tmp_dir} do
-      File.cp_r!(Path.join(@plugin_dir, "priv"), Path.join(tmp_dir, "priv"))
-      {:ok, manifest} = Manifest.load(tmp_dir)
-
-      assert :ok = Verify.verify_plugin(tmp_dir, manifest)
-
-      bridge_path = Path.join(tmp_dir, manifest.android.bridge_kt)
-      File.write!(bridge_path, "\n// signature regression tamper\n", [:append])
-
-      assert {:error, :invalid_signature} = Verify.verify_plugin(tmp_dir, manifest)
+    test "rejects a signature after the real Kotlin bridge is changed", %{tmp_dir: tmp_dir} do
+      {:ok, manifest} = Manifest.load(@plugin_dir)
+      assert_signed_source_tamper_rejected!(tmp_dir, manifest.android.bridge_kt)
     end
 
     @tag :tmp_dir
     test "rejects a signature after the real Objective-C NIF source is changed", %{
       tmp_dir: tmp_dir
     } do
-      File.cp_r!(Path.join(@plugin_dir, "priv"), Path.join(tmp_dir, "priv"))
-      {:ok, manifest} = Manifest.load(tmp_dir)
+      assert_signed_source_tamper_rejected!(tmp_dir, "priv/native/ios/mob_notify_nif.m")
+    end
 
-      assert :ok = Verify.verify_plugin(tmp_dir, manifest)
-
-      objective_c_path = Path.join(tmp_dir, "priv/native/ios/mob_notify_nif.m")
-      assert File.regular?(objective_c_path)
-      File.write!(objective_c_path, "\n// signature regression tamper\n", [:append])
-
-      assert {:error, :invalid_signature} = Verify.verify_plugin(tmp_dir, manifest)
+    @tag :tmp_dir
+    test "rejects a signature after the real Zig NIF source is changed", %{tmp_dir: tmp_dir} do
+      assert_signed_source_tamper_rejected!(tmp_dir, "priv/native/jni/mob_notify_nif.zig")
     end
 
     test "declares the cross-platform NIF pattern: one module, both platforms",
@@ -299,5 +288,19 @@ defmodule MobNotifyTest do
         assert fa in exports, "#{inspect(fa)} missing from MobNotify"
       end
     end
+  end
+
+  defp assert_signed_source_tamper_rejected!(tmp_dir, relative_path) do
+    File.cp_r!(Path.join(@plugin_dir, "priv"), Path.join(tmp_dir, "priv"))
+    {:ok, manifest} = Manifest.load(tmp_dir)
+
+    assert {:ok, 2} = Verify.verify_plugin_with_version(tmp_dir, manifest)
+
+    source_path = Path.join(tmp_dir, relative_path)
+    assert File.regular?(source_path)
+    File.write!(source_path, "\n// signature regression tamper\n", [:append])
+
+    assert {:error, :invalid_signature} =
+             Verify.verify_plugin_with_version(tmp_dir, manifest)
   end
 end
