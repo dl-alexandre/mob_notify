@@ -43,6 +43,22 @@ defmodule MobNotifyTest do
       assert {:error, :invalid_signature} = Verify.verify_plugin(tmp_dir, manifest)
     end
 
+    @tag :tmp_dir
+    test "rejects a signature after the real Objective-C NIF source is changed", %{
+      tmp_dir: tmp_dir
+    } do
+      File.cp_r!(Path.join(@plugin_dir, "priv"), Path.join(tmp_dir, "priv"))
+      {:ok, manifest} = Manifest.load(tmp_dir)
+
+      assert :ok = Verify.verify_plugin(tmp_dir, manifest)
+
+      objective_c_path = Path.join(tmp_dir, "priv/native/ios/mob_notify_nif.m")
+      assert File.regular?(objective_c_path)
+      File.write!(objective_c_path, "\n// signature regression tamper\n", [:append])
+
+      assert {:error, :invalid_signature} = Verify.verify_plugin(tmp_dir, manifest)
+    end
+
     test "declares the cross-platform NIF pattern: one module, both platforms",
          %{manifest: m} do
       assert [ios, android] = m.nifs

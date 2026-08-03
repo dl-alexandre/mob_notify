@@ -38,7 +38,12 @@ defmodule MobNotify.MixProject do
     # manifest tests run the real pre-publish validator) and never ships.
     [
       {:mob, "~> 0.7"},
-      {:mob_dev, "~> 0.6", only: [:dev, :test], runtime: false},
+      # Pin the Objective-C source-signing fix until the next mob_dev Hex release.
+      {:mob_dev,
+       github: "dl-alexandre/mob_dev",
+       ref: "baf77b06665f1afb97f07665e4deff9399eed3be",
+       only: [:dev, :test],
+       runtime: false},
       # Code quality — Credo + ex_slop (AI-pattern checks) + jump_credo_checks,
       # mirroring mob core's pre-commit gate.
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
