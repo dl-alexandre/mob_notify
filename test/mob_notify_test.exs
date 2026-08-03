@@ -1,7 +1,7 @@
 defmodule MobNotifyTest do
   use ExUnit.Case, async: true
 
-  alias MobDev.Plugin.{Manifest, Validator}
+  alias MobDev.Plugin.{Manifest, Validator, Verify}
 
   @plugin_dir Path.expand("..", __DIR__)
   @contract Code.eval_file(Path.join(__DIR__, "fixtures/push_contract.exs")) |> elem(0)
@@ -22,6 +22,41 @@ defmodule MobNotifyTest do
 
     test "passes the full pre-publish validator", %{manifest: m} do
       assert %{errors: []} = Validator.validate_plugin(m, @plugin_dir)
+    end
+
+    test "ships a valid signature for the manifest and referenced native sources", %{
+      manifest: m
+    } do
+      assert :ok = Verify.verify_plugin(@plugin_dir, m)
+    end
+
+    @tag :tmp_dir
+    test "rejects a signature after a referenced native source is changed", %{tmp_dir: tmp_dir} do
+      File.cp_r!(Path.join(@plugin_dir, "priv"), Path.join(tmp_dir, "priv"))
+      {:ok, manifest} = Manifest.load(tmp_dir)
+
+      assert :ok = Verify.verify_plugin(tmp_dir, manifest)
+
+      bridge_path = Path.join(tmp_dir, manifest.android.bridge_kt)
+      File.write!(bridge_path, "\n// signature regression tamper\n", [:append])
+
+      assert {:error, :invalid_signature} = Verify.verify_plugin(tmp_dir, manifest)
+    end
+
+    @tag :tmp_dir
+    test "rejects a signature after the real Objective-C NIF source is changed", %{
+      tmp_dir: tmp_dir
+    } do
+      File.cp_r!(Path.join(@plugin_dir, "priv"), Path.join(tmp_dir, "priv"))
+      {:ok, manifest} = Manifest.load(tmp_dir)
+
+      assert :ok = Verify.verify_plugin(tmp_dir, manifest)
+
+      objective_c_path = Path.join(tmp_dir, "priv/native/ios/mob_notify_nif.m")
+      assert File.regular?(objective_c_path)
+      File.write!(objective_c_path, "\n// signature regression tamper\n", [:append])
+
+      assert {:error, :invalid_signature} = Verify.verify_plugin(tmp_dir, manifest)
     end
 
     test "declares the cross-platform NIF pattern: one module, both platforms",
