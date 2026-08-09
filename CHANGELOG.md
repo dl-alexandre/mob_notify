@@ -6,6 +6,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.1.3] - 2026-08-09
+
+### Fixed
+- Android `MobNotifyBridge` now delivers `{:push_token_error, :android, reason}`
+  for blank cached FCM tokens, blank Firebase results, and Firebase task
+  failures via a plugin-owned JNI seam (`nativeDeliverNotifyPushTokenError`).
+  Host packages no longer need a Casein-only bridge fork for failure reporting.
+- Matching Zig NIF thunk sends the three-element BEAM error tuple.
+
+### Tests
+- Source-level contract tests pin the Kotlin blank/failure paths and the Zig
+  `push_token_error` message shape.
+
 ## [0.1.1] - 2026-06-16
 
 ### Changed

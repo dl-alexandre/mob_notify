@@ -4,6 +4,6 @@ erl_crash.dump
 *.beam
 .DS_Store
 
-# Signature is regenerated fresh in CI on every release (never committed,
-# so it can't go stale). The .pub IS committed.
-priv/mob_plugin.sig
+# Fork consumers pin this Git tree rather than the signed Hex artifact, so the
+# reviewed signature must travel with the pinned source revision.
+!priv/mob_plugin.sig

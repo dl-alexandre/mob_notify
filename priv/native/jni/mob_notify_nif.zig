@@ -12,6 +12,8 @@
 //! Delivered message shape (this thunk, exact core parity with
 //! mob_deliver_push_token, mob_nif.zig:2314-2326):
 //!   {:push_token, :android, token_binary}
+//! Registration failures use the same plugin-owned JNI seam:
+//!   {:push_token_error, :android, reason_binary}
 //!
 //! Build path: compiled via `addZigObject` from `-Dplugin_zig_nifs`, reaching
 //! mob-core ERTS / JNI bindings through `@import("erts")` / `@import("jni")`.
@@ -105,6 +107,36 @@ export fn Java_io_mob_notify_MobNotifyBridge_nativeDeliverNotifyPushToken(
         erts.atom(env, "push_token"),
         erts.atom(env, "android"),
         erts.enif_make_binary(env, &tb),
+    });
+    _ = erts.enif_send(null, &pid, env, msg);
+}
+
+// {:push_token_error, :android, reason_binary} — registration failures are
+// delivered by this plugin-owned thunk so MobNotifyBridge stays independent of
+// every host application's package and MobBridge implementation.
+export fn Java_io_mob_notify_MobNotifyBridge_nativeDeliverNotifyPushTokenError(
+    jenv: *jni.JNIEnv,
+    cls: jni.JClass,
+    pid_long: jni.JLong,
+    reason: jni.JString,
+) callconv(.c) void {
+    _ = cls;
+    var pid = pidFromLong(pid_long);
+    const env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(env);
+
+    const reason_c = jenv.*.GetStringUTFChars.?(jenv, reason, null) orelse return;
+    defer jenv.*.ReleaseStringUTFChars.?(jenv, reason, reason_c);
+
+    const reason_len = std.mem.len(reason_c);
+    var reason_bin: erts.ErlNifBinary = undefined;
+    if (erts.enif_alloc_binary(reason_len, &reason_bin) == 0) return;
+    @memcpy(reason_bin.data[0..reason_len], reason_c[0..reason_len]);
+
+    const msg = erts.makeTuple(env, .{
+        erts.atom(env, "push_token_error"),
+        erts.atom(env, "android"),
+        erts.enif_make_binary(env, &reason_bin),
     });
     _ = erts.enif_send(null, &pid, env, msg);
 }

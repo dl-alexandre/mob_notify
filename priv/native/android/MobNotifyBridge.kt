@@ -55,10 +55,19 @@ object MobNotifyBridge : io.mob.plugin.MobActivityAware {
     // refreshed tokens flow through the host MobFirebaseService → core thunk.
     @JvmStatic external fun nativeDeliverNotifyPushToken(pid: Long, token: String)
 
+    // {:push_token_error, :android, reason} — registration failures belong to
+    // this plugin-owned JNI seam so the bridge never depends on a host package.
+    @JvmStatic external fun nativeDeliverNotifyPushTokenError(pid: Long, reason: String)
+
     @JvmStatic fun register() = nativeRegister()
 
     override fun setActivity(activity: Activity) {
         activityRef = WeakReference(activity)
+    }
+
+    private fun deliverPushTokenError(pid: Long, reason: String) {
+        android.util.Log.w("MobNotify", "Push token fetch failed: $reason")
+        nativeDeliverNotifyPushTokenError(pid, reason)
     }
 
     // Parse the opts JSON and delegate to MobNotifySchedules.schedule, which
@@ -97,14 +106,28 @@ object MobNotifyBridge : io.mob.plugin.MobActivityAware {
     @JvmStatic
     fun notify_register_push(pid: Long) {
         MobNotifyHub.notifyPid = pid
-        MobNotifyHub.pendingToken?.let { token ->
+        MobNotifyHub.pendingToken?.let { cached ->
             MobNotifyHub.pendingToken = null
-            nativeDeliverNotifyPushToken(pid, token)
+            if (cached.isNotBlank()) {
+                nativeDeliverNotifyPushToken(pid, cached)
+            } else {
+                deliverPushTokenError(pid, "cached_token_blank")
+            }
             return
         }
         com.google.firebase.messaging.FirebaseMessaging.getInstance().token
             .addOnCompleteListener { task ->
-                if (task.isSuccessful) nativeDeliverNotifyPushToken(pid, task.result)
+                if (task.isSuccessful) {
+                    val token = task.result
+                    if (!token.isNullOrBlank()) {
+                        nativeDeliverNotifyPushToken(pid, token)
+                    } else {
+                        deliverPushTokenError(pid, "firebase_token_blank")
+                    }
+                } else {
+                    val reason = task.exception?.javaClass?.simpleName ?: "firebase_token_fetch_failed"
+                    deliverPushTokenError(pid, reason)
+                }
             }
     }
 }

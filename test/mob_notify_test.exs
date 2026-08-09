@@ -1,7 +1,7 @@
 defmodule MobNotifyTest do
   use ExUnit.Case, async: true
 
-  alias MobDev.Plugin.{Manifest, Validator}
+  alias MobDev.Plugin.{Manifest, Validator, Verify}
 
   @plugin_dir Path.expand("..", __DIR__)
   @contract Code.eval_file(Path.join(__DIR__, "fixtures/push_contract.exs")) |> elem(0)
@@ -22,6 +22,30 @@ defmodule MobNotifyTest do
 
     test "passes the full pre-publish validator", %{manifest: m} do
       assert %{errors: []} = Validator.validate_plugin(m, @plugin_dir)
+    end
+
+    test "ships a current version signature for the manifest and referenced native sources", %{
+      manifest: m
+    } do
+      assert {:ok, 2} = Verify.verify_plugin_with_version(@plugin_dir, m)
+    end
+
+    @tag :tmp_dir
+    test "rejects a signature after the real Kotlin bridge is changed", %{tmp_dir: tmp_dir} do
+      {:ok, manifest} = Manifest.load(@plugin_dir)
+      assert_signed_source_tamper_rejected!(tmp_dir, manifest.android.bridge_kt)
+    end
+
+    @tag :tmp_dir
+    test "rejects a signature after the real Objective-C NIF source is changed", %{
+      tmp_dir: tmp_dir
+    } do
+      assert_signed_source_tamper_rejected!(tmp_dir, "priv/native/ios/mob_notify_nif.m")
+    end
+
+    @tag :tmp_dir
+    test "rejects a signature after the real Zig NIF source is changed", %{tmp_dir: tmp_dir} do
+      assert_signed_source_tamper_rejected!(tmp_dir, "priv/native/jni/mob_notify_nif.zig")
     end
 
     test "declares the cross-platform NIF pattern: one module, both platforms",
@@ -126,6 +150,61 @@ defmodule MobNotifyTest do
     end
   end
 
+  describe "android push-token registration delivery" do
+    # Firebase APIs and JNI are unavailable to host-side ExUnit, so pin the
+    # plugin-owned Kotlin/Zig contract that the native host build compiles.
+    setup do
+      {:ok, manifest} = Manifest.load(@plugin_dir)
+
+      %{
+        kotlin: File.read!(Path.join(@plugin_dir, manifest.android.bridge_kt)),
+        zig: File.read!(Path.join(@plugin_dir, "priv/native/jni/mob_notify_nif.zig"))
+      }
+    end
+
+    test "uses a plugin-owned error thunk with no host-package reference", %{kotlin: kotlin} do
+      assert kotlin =~
+               "external fun nativeDeliverNotifyPushTokenError(pid: Long, reason: String)"
+
+      assert kotlin =~ "nativeDeliverNotifyPushTokenError(pid, reason)"
+      refute kotlin =~ "com.example."
+      refute kotlin =~ "MobBridge.nativeDeliverAtom3"
+    end
+
+    test "delivers valid cached tokens and reports blank cached tokens", %{kotlin: kotlin} do
+      assert kotlin =~ "if (cached.isNotBlank())"
+      assert kotlin =~ "nativeDeliverNotifyPushToken(pid, cached)"
+      assert kotlin =~ ~s|deliverPushTokenError(pid, "cached_token_blank")|
+    end
+
+    test "delivers valid Firebase tokens and reports blank or failed fetches", %{kotlin: kotlin} do
+      assert kotlin =~ "if (!token.isNullOrBlank())"
+      assert kotlin =~ "nativeDeliverNotifyPushToken(pid, token)"
+      assert kotlin =~ ~s|deliverPushTokenError(pid, "firebase_token_blank")|
+      assert kotlin =~ "task.exception?.javaClass?.simpleName"
+      assert kotlin =~ ~s("firebase_token_fetch_failed")
+      assert kotlin =~ "deliverPushTokenError(pid, reason)"
+    end
+
+    test "the JNI error thunk sends the exact three-element BEAM message", %{zig: zig} do
+      assert [thunk] =
+               Regex.run(
+                 ~r/export fn Java_io_mob_notify_MobNotifyBridge_nativeDeliverNotifyPushTokenError\([\s\S]*?\n\}/,
+                 zig
+               )
+
+      assert thunk =~ ~s|erts.atom(env, "push_token_error")|
+      assert thunk =~ ~s|erts.atom(env, "android")|
+      assert thunk =~ "erts.enif_make_binary(env, &reason_bin)"
+      assert thunk =~ "erts.enif_send(null, &pid, env, msg)"
+
+      assert Regex.match?(
+               ~r/push_token_error[\s\S]*android[\s\S]*enif_make_binary/,
+               thunk
+             )
+    end
+  end
+
   describe "NIF stub agreement" do
     # Guards the .erl stub / manifest, not app code — VacuousTest can't see that.
     # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
@@ -209,5 +288,19 @@ defmodule MobNotifyTest do
         assert fa in exports, "#{inspect(fa)} missing from MobNotify"
       end
     end
+  end
+
+  defp assert_signed_source_tamper_rejected!(tmp_dir, relative_path) do
+    File.cp_r!(Path.join(@plugin_dir, "priv"), Path.join(tmp_dir, "priv"))
+    {:ok, manifest} = Manifest.load(tmp_dir)
+
+    assert {:ok, 2} = Verify.verify_plugin_with_version(tmp_dir, manifest)
+
+    source_path = Path.join(tmp_dir, relative_path)
+    assert File.regular?(source_path)
+    File.write!(source_path, "\n// signature regression tamper\n", [:append])
+
+    assert {:error, :invalid_signature} =
+             Verify.verify_plugin_with_version(tmp_dir, manifest)
   end
 end
